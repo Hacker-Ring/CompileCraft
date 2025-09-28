@@ -1,5 +1,5 @@
 "use client"
-import React, { useContext, useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import FormSection from '../../_components/FormSection'
 import { TEMPLATE } from '../../../_components/TemplateListSection'
 import Templates from '@/app/(data)/Templates'
@@ -9,12 +9,10 @@ import Link from 'next/link'
 import { db } from '@/utils/db'
 import { AIOutput } from '@/utils/schema'
 import { RoomProvider } from '@/liveblocks.config'
+import { LiveObject } from '@liveblocks/client'
 import { CollaborativeEditor } from '@/components/CollaborativeEditor'
+import CollaborativeMindMap from '@/components/CollaborativeMindMap'
 import moment from 'moment'
-import { TotalUsageContext } from '@/app/(context)/TotalUsageContext'
-import { useRouter } from 'next/navigation'
-import { UserSubscriptionContext } from '@/app/(context)/UserSubscriptionContext'
-import { UpdateCreditUsageContext } from '@/app/(context)/UpdateCreditUsageContext'
 import { useUser } from '@clerk/nextjs'
 import * as Y from 'yjs'
 
@@ -31,15 +29,13 @@ export default function ContentClient({ params, initialContent }: Props) {
     const selectedTemplate: TEMPLATE | undefined = Templates?.find((item) => item.slug == params['template-slug']);
     const [loading, setLoading] = useState(false);
     const [aiOutput, setAiOutput] = useState<string>(initialContent || '');
+    const [aiMindMap, setAiMindMap] = useState<any>(null);
     const [isContentLoaded, setIsContentLoaded] = useState(false);
     const [currentContent, setCurrentContent] = useState<string>(initialContent || '');
     const [document] = useState(() => new Y.Doc());
+    const [activeView, setActiveView] = useState<'editor' | 'mindmap'>('editor');
     
     const { user } = useUser();
-    const router = useRouter();
-    const { totalUsage, setTotalUsage } = useContext(TotalUsageContext)
-    const { userSubscription, setUserSubscription } = useContext(UserSubscriptionContext);
-    const { updateCreditUsage, setUpdateCreditUsage } = useContext(UpdateCreditUsageContext)
     
     // Use documentId from the URL to create a unique room ID for collaboration
     const roomId = `document-${params.documentId}`;
@@ -48,11 +44,6 @@ export default function ContentClient({ params, initialContent }: Props) {
      * Used to generate content from AI by sending a structured prompt.
      */
     const GenerateAIContent = async (formData: any) => {
-        if (totalUsage >= 10000 && !userSubscription) {
-            console.log("Please Upgrade");
-            router.push('/dashboard/billing')
-            return;
-        }
         setLoading(true);
 
         const selectedTemplatePrompt = selectedTemplate?.aiPrompt;
@@ -87,23 +78,25 @@ export default function ContentClient({ params, initialContent }: Props) {
                 throw new Error(data.error);
             }
             
+            // Handle the new API response structure
             setAiOutput(data.text);
+            setAiMindMap(data.mindMap);
             setCurrentContent(data.text);
-            await SaveInDb(JSON.stringify(formData), selectedTemplate?.slug, data.text)
+            await SaveInDb(JSON.stringify(formData), selectedTemplate?.slug, data.text, data.mindMap)
         } catch (error) {
             console.error('Content generation failed:', error);
             setAiOutput('Failed to generate content. Please try again.');
         }
         setLoading(false);
-        setUpdateCreditUsage(Date.now())
     }
 
-    const SaveInDb = async (formData: any, slug: any, aiResp: string) => {
+    const SaveInDb = async (formData: any, slug: any, aiResp: string, mindMapData?: any) => {
         const result = await db.insert(AIOutput).values({
             formData: formData,
             templateSlug: slug,
             documentId: params.documentId,
             aiResponse: aiResp,
+            mindMapData: mindMapData ? JSON.stringify(mindMapData) : null,
             createdBy: user?.primaryEmailAddress?.emailAddress,
             createdAt: moment().format('DD/MM/yyyy'),
         });
@@ -170,23 +163,89 @@ export default function ContentClient({ params, initialContent }: Props) {
                 />
             </div>
 
-            {/* Collaborative Editor Section - Full Width */}
+            {/* Immediate AI Output preview (plain text) */}
+            {aiOutput && (
+                <div className='mb-6 bg-white border rounded-lg shadow-sm'>
+                    <div className='p-4 border-b'>
+                        <h3 className='font-medium text-lg'>AI Output Preview</h3>
+                        <p className='text-xs text-gray-500'>Plain text preview of the latest generated content</p>
+                    </div>
+                    <div className='p-4'>
+                        <pre className='whitespace-pre-wrap text-sm text-gray-800'>{aiOutput}</pre>
+                    </div>
+                </div>
+            )}
+
+            {/* Collaborative Workspace Section - Full Width */}
             <div className='bg-white shadow-lg border rounded-lg'>
                 <div className='p-5 pb-3'>
-                    <h3 className='font-medium text-lg'>Collaborative Editor</h3>
-                    <p className='text-sm text-gray-600'>Generate content above, then edit collaboratively below. Both users can generate new content and edit. Changes sync in real-time.</p>
+                    <div className='flex items-center justify-between'>
+                        <div>
+                            <h3 className='font-medium text-lg'>Collaborative Workspace</h3>
+                            <p className='text-sm text-gray-600'>Generate content above, then edit collaboratively below. Both users can generate new content and edit. Changes sync in real-time.</p>
+                        </div>
+                        <div className='flex bg-gray-100 rounded-lg p-1'>
+                            <button
+                                onClick={() => setActiveView('editor')}
+                                className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${
+                                    activeView === 'editor'
+                                        ? 'bg-gray-800 text-white'
+                                        : 'text-gray-600 hover:text-gray-800'
+                                }`}
+                            >
+                                Text Editor
+                            </button>
+                            <button
+                                onClick={() => setActiveView('mindmap')}
+                                className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${
+                                    activeView === 'mindmap'
+                                        ? 'bg-gray-800 text-white'
+                                        : 'text-gray-600 hover:text-gray-800'
+                                }`}
+                            >
+                                Mind Map
+                            </button>
+                        </div>
+                    </div>
                 </div>
                 <div className='p-5'>
                     {isContentLoaded ? (
                         <RoomProvider 
                             id={roomId} 
-                            initialPresence={{ cursor: null }} 
-                            initialStorage={{ content: aiOutput || '' }}
+                            initialPresence={{ cursor: null, isTyping: false }} 
+                            initialStorage={{ 
+                                content: aiOutput || '',
+                                mindMap: new LiveObject({
+                                    root: {
+                                        id: 'root',
+                                        text: 'Central Topic',
+                                        children: [
+                                            {
+                                                id: 'child1',
+                                                text: 'Branch 1',
+                                                children: []
+                                            },
+                                            {
+                                                id: 'child2',
+                                                text: 'Branch 2',
+                                                children: []
+                                            }
+                                        ]
+                                    }
+                                })
+                            }}
                         >
-                            <CollaborativeEditor 
-                                document={document}
-                                initialContent={aiOutput}
-                            />
+                            {activeView === 'editor' ? (
+                                <CollaborativeEditor 
+                                    document={document}
+                                    initialContent={aiOutput}
+                                />
+                            ) : (
+                                <CollaborativeMindMap 
+                                    content={aiOutput}
+                                    initialMindMap={aiMindMap}
+                                />
+                            )}
                             <div className="mt-2 text-xs text-gray-400 flex justify-between items-center">
                                 <span>Room ID: {roomId} | Content loaded: {aiOutput ? 'Yes' : 'No'}</span>
                                 <span className="text-green-600">🟢 Collaborative editing active</span>

@@ -1,6 +1,6 @@
 // File: app/dashboard/content/[template-slug]/[documentId]/page.tsx
 "use client"
-import React, { useContext, useState, useEffect, useMemo } from 'react'
+import React, { useState, useEffect, useMemo } from 'react'
 import FormSection from '../../_components/FormSection'
 import { TEMPLATE } from '../../../_components/TemplateListSection'
 import Templates from '@/app/(data)/Templates'
@@ -9,13 +9,11 @@ import { ArrowLeft } from 'lucide-react'
 import Link from 'next/link'
 import { db } from '@/utils/db'
 import { AIOutput } from '@/utils/schema'
-import { RoomProvider, useOthers } from '@/liveblocks.config'
+import { RoomProvider, useOthers, useMyPresence } from '@/liveblocks.config'
+import { LiveObject } from '@liveblocks/client'
 import { CollaborativeEditor } from '@/components/CollaborativeEditor'
+import CollaborativeMindMap from '@/components/CollaborativeMindMap'
 import moment from 'moment'
-import { TotalUsageContext } from '@/app/(context)/TotalUsageContext'
-import { useRouter } from 'next/navigation'
-import { UserSubscriptionContext } from '@/app/(context)/UserSubscriptionContext'
-import { UpdateCreditUsageContext } from '@/app/(context)/UpdateCreditUsageContext'
 import { useUser } from '@clerk/nextjs'
 import * as Y from 'yjs';
 import Image from 'next/image'
@@ -25,11 +23,52 @@ function ActiveCollaborators() {
     const others = useOthers();
     return (
         <div className="flex -space-x-2">
-            {others.map(({ connectionId, info }: { connectionId: string; info: any }) => (
-                info?.avatar && (
-                    <Image key={connectionId} src={info.avatar} alt={info.name ?? 'Anonymous'} width={32} height={32} className="rounded-full border-2 border-white" title={info.name ?? 'Anonymous'} />
-                )
-            ))}
+            {others.map(({ connectionId, info }) => {
+                const userName = info?.name ?? 'Anonymous';
+                const userAvatar = info?.avatar;
+                
+                return (
+                    <div key={connectionId} className="relative">
+                        {userAvatar ? (
+                            <Image 
+                                src={userAvatar} 
+                                alt={userName} 
+                                width={32} 
+                                height={32} 
+                                className="rounded-full border-2 border-white" 
+                                title={userName}
+                            />
+                        ) : (
+                            <div 
+                                className="w-8 h-8 rounded-full border-2 border-white bg-gray-800 flex items-center justify-center text-white text-xs font-semibold"
+                                title={userName}
+                            >
+                                {userName.charAt(0).toUpperCase()}
+                            </div>
+                        )}
+                    </div>
+                );
+            })}
+        </div>
+    );
+}
+
+// A component to show who is currently typing
+function TypingIndicator() {
+    const others = useOthers();
+    const typingUsers = others.filter(({ presence }) => presence?.isTyping);
+    
+    if (typingUsers.length === 0) return null;
+    
+    return (
+        <div className="text-sm text-gray-400 italic">
+            {typingUsers.length === 1 ? (
+                <span>{typingUsers[0].info?.name ?? 'Someone'} is typing...</span>
+            ) : typingUsers.length === 2 ? (
+                <span>{typingUsers[0].info?.name ?? 'Someone'} and {typingUsers[1].info?.name ?? 'someone'} are typing...</span>
+            ) : (
+                <span>{typingUsers.length} people are typing...</span>
+            )}
         </div>
     );
 }
@@ -47,31 +86,32 @@ function CreateNewContent(props:PROPS) {
     const [aiOutput,setAiOutput]=useState<string>('');
     const [initialContent,setInitialContent]=useState<string>('');
     const [showForm,setShowForm]=useState<boolean>(true);
+    const [activeView, setActiveView] = useState<'editor' | 'mindmap'>('editor');
     const {user}=useUser();
-    const router=useRouter();
-    const {totalUsage,setTotalUsage}=useContext(TotalUsageContext);
-    const {userSubscription,setUserSubscription}=useContext(UserSubscriptionContext);
-    const {updateCreditUsage,setUpdateCreditUsage}=useContext(UpdateCreditUsageContext);
     
     const roomId = props.params.documentId;
     const yDoc = useMemo(() => new Y.Doc(), []);
 
     const GenerateAIContent=async(formData:any)=>{
-        if(totalUsage>=10000&&!userSubscription)
-            {
-                console.log("Please Upgrade");
-                router.push('/dashboard/billing')
-                return ;
-            }
         setLoading(true);
         const selectedTemplatePrompt=selectedTemplate?.aiPrompt;
         const userRequest = JSON.stringify(formData)+", "+selectedTemplatePrompt;
 
-        const systemPrompt = `You are "Creator AI," an expert content creation assistant. Your goal is to provide a helpful, well-structured response. Follow these formatting rules strictly: 1. Start with a brief, friendly introductory sentence. 2. Structure the main content with paragraphs and bullet points using newlines. 3. CRITICAL: The entire response must be plain text. Do not use any HTML or Markdown formatting.`;
+        const systemPrompt = `You are "Creator AI," an expert content creation assistant. Your goal is to provide high-quality, engaging content based on the user's request and template requirements. Follow these guidelines:
+
+1. Create content that matches the specific template requirements exactly
+2. Use proper HTML formatting when requested (h1, h2, p, ul, li, strong, em, etc.)
+3. Ensure content is well-structured, engaging, and valuable to readers
+4. Include specific details, examples, and actionable insights
+5. Write in a professional yet accessible tone
+6. Make content comprehensive and thorough
+7. Follow SEO best practices when applicable
+
+Important: Generate content exactly as requested by the template prompt. If HTML formatting is requested, use proper HTML tags. If plain text is requested, provide clean plain text without any formatting.`;
         const FinalAIPrompt = systemPrompt + userRequest;
         
         try {
-            const response = await fetch('/api/generate-content', {
+            const response = await fetch('/api/generate-template-content', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ prompt: FinalAIPrompt })
@@ -83,13 +123,11 @@ function CreateNewContent(props:PROPS) {
             setAiOutput(data.text);
             setInitialContent(data.text);
             await SaveInDb(JSON.stringify(formData),selectedTemplate?.slug,data.text)
-            setShowForm(false);
         } catch (error) {
             console.error('Content generation failed:', error);
             setAiOutput('Failed to generate content. Please try again.');
         }
-        setLoading(false); 
-        setUpdateCreditUsage(Date.now());
+        setLoading(false);
     }
 
     const SaveInDb=async(formData:any,slug:any,aiResp:string)=>{
@@ -107,15 +145,21 @@ function CreateNewContent(props:PROPS) {
     // Load previously saved content
     useEffect(()=>{
         const load = async()=>{
-            const res:any = await db.query.AIOutput.findFirst({
-                where: (row:any, { eq }:any) => eq(row.documentId, props.params.documentId),
-                orderBy: (row:any, { desc }:any) => desc(row.id)
-            });
-            if(res?.aiResponse){
-                setAiOutput(res.aiResponse);
-                setInitialContent(res.aiResponse);
-                setShowForm(false);
-            } else {
+            try {
+                const res:any = await db.query.AIOutput.findFirst({
+                    where: (row:any, { eq }:any) => eq(row.documentId, props.params.documentId),
+                    orderBy: (row:any, { desc }:any) => desc(row.id)
+                });
+                if(res?.aiResponse){
+                    setAiOutput(res.aiResponse);
+                    setInitialContent(res.aiResponse);
+                    console.log('Loaded existing content from database');
+                }
+                // Always show the form
+                setShowForm(true);
+            } catch (error) {
+                console.error('Error loading content from database:', error);
+                // Still show the form even if loading fails
                 setShowForm(true);
             }
         };
@@ -144,17 +188,73 @@ function CreateNewContent(props:PROPS) {
             </div>
         )}
         
-        <RoomProvider id={roomId} initialPresence={{ cursor: null }}>
+        <RoomProvider 
+            id={roomId} 
+            initialPresence={{ cursor: null, isTyping: false }}
+            initialStorage={{ 
+                content: initialContent || '',
+                mindMap: new LiveObject({
+                    root: {
+                        id: 'root',
+                        text: 'Central Topic',
+                        children: [
+                            {
+                                id: 'child1',
+                                text: 'Branch 1',
+                                children: []
+                            },
+                            {
+                                id: 'child2',
+                                text: 'Branch 2',
+                                children: []
+                            }
+                        ]
+                    }
+                }),
+                contentInitialized: new LiveObject({ initialized: false })
+            }}
+        >
             <div className='bg-slate-800 shadow-lg border border-slate-700 rounded-lg'>
                 <div className='p-5 flex justify-between items-center border-b border-slate-700'>
-                    <h3 className='font-medium text-lg text-white'>Collaborative Editor</h3>
+                    <div className='flex flex-col'>
+                        <div className='flex items-center gap-4'>
+                            <h3 className='font-medium text-lg text-white'>Collaborative Workspace</h3>
+                            <div className='flex bg-slate-700 rounded-lg p-1'>
+                                <button
+                                    onClick={() => setActiveView('editor')}
+                                    className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${
+                                        activeView === 'editor'
+                                            ? 'bg-gray-800 text-white'
+                                            : 'text-gray-300 hover:text-white'
+                                    }`}
+                                >
+                                    Text Editor
+                                </button>
+                                <button
+                                    onClick={() => setActiveView('mindmap')}
+                                    className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${
+                                        activeView === 'mindmap'
+                                            ? 'bg-gray-800 text-white'
+                                            : 'text-gray-300 hover:text-white'
+                                    }`}
+                                >
+                                    Mind Map
+                                </button>
+                            </div>
+                        </div>
+                        <TypingIndicator />
+                    </div>
                     <ActiveCollaborators />
                 </div>
                 <div className='p-2'>
-                    <CollaborativeEditor 
-                        document={yDoc}
-                        initialContent={initialContent}
-                    />
+                    {activeView === 'editor' ? (
+                        <CollaborativeEditor 
+                            document={yDoc}
+                            initialContent={initialContent}
+                        />
+                    ) : (
+                        <CollaborativeMindMap content={initialContent || aiOutput} />
+                    )}
                 </div>
             </div>
         </RoomProvider>

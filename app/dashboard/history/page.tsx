@@ -32,7 +32,7 @@ async function History() {
         return template;
     }
   return (
-    <div className='m-5 p-5 border border-slate-600 rounded-lg bg-slate-800'>
+    <div className='m-5 p-5 border border-slate-600 rounded-lg bg-black'>
         <h2 className='font-bold text-3xl text-gray-200'>History</h2>
         <p className='text-gray-400'>Search your previously generate AI content</p>
         <div className='grid grid-cols-7 font-bold bg-slate-700 mt-5 py-3 px-3 rounded-md'>
